@@ -2,24 +2,25 @@
  * trends.js
  * Pure, dependency-free trend analysis.
  *
- * Input: reports shaped like { id, kind: "lab", date: "YYYY-MM-DD", values: [...] }
- * Output: plain objects the UI can render directly — no backend, no storage.
+ * For every test with at least three readings, fit a straight line through
+ * (date, value), project when it crosses the upper reference limit, and report
+ * the date it would reach the test's clinical target (where one is defined).
+ * No backend, no storage.
  */
 
 const DAY_MS = 86_400_000;
 const MONTH_MS = DAY_MS * 30.4375;
 
 /**
- * Curated tests get a clinical threshold and plain-language names.
- * A threshold is the line shown in red on the chart; reference ranges still
- * come from the report itself so unusual labs are not silently "corrected".
+ * Curated tests get plain-language names and an optional clinical target
+ * beyond the upper reference limit (e.g. HbA1c 6.5%). Reference ranges still
+ * come from the report itself where present.
  */
 export const TEST_META = {
   HbA1c: {
     unit: "%",
-    range: [4.0, 5.6],
-    threshold: 6.5,
-    direction: "above",
+    range: [4.0, 5.7],
+    target: 6.5,
     step: 0.2,
     aliases: [
       "hba1c",
@@ -32,8 +33,6 @@ export const TEST_META = {
   "Fasting Glucose": {
     unit: "mg/dL",
     range: [70, 99],
-    threshold: 100,
-    direction: "above",
     step: 6,
     aliases: [
       "fasting glucose",
@@ -47,48 +46,36 @@ export const TEST_META = {
   "LDL Cholesterol": {
     unit: "mg/dL",
     range: [0, 100],
-    threshold: 160,
-    direction: "above",
     step: 8,
     aliases: ["ldl cholesterol", "ldl-c", "ldl"],
   },
   "HDL Cholesterol": {
     unit: "mg/dL",
     range: [40, 100],
-    threshold: 40,
-    direction: "below",
     step: 2,
     aliases: ["hdl cholesterol", "hdl-c", "hdl"],
   },
   eGFR: {
     unit: "mL/min/1.73m²",
     range: [90, 120],
-    threshold: 60,
-    direction: "below",
     step: 3,
     aliases: ["egfr", "gfr", "estimated gfr"],
   },
   Hemoglobin: {
     unit: "g/dL",
     range: [12, 15],
-    threshold: 12,
-    direction: "below",
     step: 0.2,
     aliases: ["hemoglobin", "haemoglobin", "hgb"],
   },
   "Vitamin D": {
     unit: "ng/mL",
     range: [30, 100],
-    threshold: 30,
-    direction: "below",
     step: 2,
     aliases: ["vitamin d", "vit d", "25-oh vitamin d", "25 hydroxy vitamin d"],
   },
   Creatinine: {
     unit: "mg/dL",
     range: [0.6, 1.2],
-    threshold: 1.3,
-    direction: "above",
     step: 0.05,
     aliases: ["creatinine", "serum creatinine"],
   },
@@ -128,6 +115,13 @@ export function addMonths(iso, months) {
   return date.toISOString().slice(0, 10);
 }
 
+/** Calendar date a fractional number of months after an ISO date. */
+function dateFromMonths(iso, months) {
+  return new Date(toDate(iso).getTime() + months * MONTH_MS)
+    .toISOString()
+    .slice(0, 10);
+}
+
 export function formatDate(iso, style = "medium") {
   if (!iso) return "—";
   const date = toDate(iso);
@@ -163,7 +157,8 @@ const round = (value, digits = 2) => Number(value.toFixed(digits));
 
 /**
  * Build one series per test across every lab report, in date order.
- * Each series is analysed immediately so the UI never has to re-do math.
+ * Tests with three or more readings are projected; the rest are reported but
+ * not charted.
  */
 export function buildSeries(reports = []) {
   const byTest = new Map();
@@ -194,26 +189,11 @@ export function buildSeries(reports = []) {
       const meta = TEST_META[series.test] ?? null;
       const latest = points[points.length - 1];
       const unit = latest.unit || meta?.unit || "";
-      const low = meta?.range?.[0] ?? latest.low;
-      const high = meta?.range?.[1] ?? latest.high;
-      const threshold =
-        typeof meta?.threshold === "number"
-          ? meta.threshold
-          : typeof high === "number"
-            ? high
-            : typeof low === "number"
-              ? low
-              : null;
-      const direction =
-        meta?.direction ?? (typeof high === "number" ? "above" : "below");
-
       return analyseSeries({
         test: series.test,
         unit,
-        low,
-        high,
-        threshold,
-        direction,
+        low: latest.low ?? meta?.range?.[0] ?? null,
+        high: latest.high ?? meta?.range?.[1] ?? null,
         meta,
         points,
       });
@@ -222,10 +202,12 @@ export function buildSeries(reports = []) {
 }
 
 function analyseSeries(series) {
-  const { points, threshold, direction, unit, meta } = series;
+  const { points, unit, low, high, meta } = series;
   const latest = points[points.length - 1];
   const first = points[0];
   const spanMonths = monthsBetween(first.date, latest.date);
+  const limit = typeof high === "number" ? high : null;
+  const target = typeof meta?.target === "number" ? meta.target : null;
 
   let slopePerMonth = 0;
   if (points.length >= 2 && spanMonths > 0) {
@@ -242,104 +224,84 @@ function analyseSeries(series) {
     slopePerMonth = denominator === 0 ? 0 : numerator / denominator;
   }
 
-  const flatEpsilon = (meta?.step ?? 0.2) / 18;
-  const isFlat = Math.abs(slopePerMonth) < flatEpsilon;
-  const monthsToThreshold = estimateCrossing({
-    latest: latest.value,
-    threshold,
-    direction,
-    slopePerMonth,
-  });
-
-  const nearThreshold =
-    threshold != null &&
-    Math.abs(threshold - latest.value) <= Math.max(Math.abs(threshold) * 0.05, 0.01);
-
+  // A projection needs three readings to describe a trend rather than a line
+  // between two points.
+  const enough = points.length >= 3 && limit != null && spanMonths > 0;
   let risk = "Low";
   let sentence = "";
+  let monthsToLimit = null;
+  let crossingDate = null;
+  let targetDate = null;
 
-  if (threshold == null) {
-    const outside = valueStatus(latest.value, series.low, series.high) !== "in-range";
-    risk = outside ? "Watch" : "Low";
-    sentence = outside
-      ? "Outside the reference range on the latest report."
-      : "No threshold set for this test — tracking only.";
-  } else if (direction === "above") {
-    const crossed = latest.value >= threshold;
-    if (crossed) {
+  if (!enough) {
+    const status = valueStatus(latest.value, low, high);
+    risk = status === "high" ? "High" : status === "low" ? "Watch" : "Low";
+    sentence =
+      points.length < 3
+        ? "At least three results are needed to project when this value might cross its upper limit."
+        : "No upper reference limit is recorded for this test.";
+  } else {
+    monthsToLimit = estimateCrossing({
+      latest: latest.value,
+      threshold: limit,
+      slopePerMonth,
+    });
+
+    if (latest.value >= limit) {
       risk = "High";
       sentence =
         slopePerMonth > 0.001
-          ? `Already above the ${withUnit(threshold, unit)} threshold and still rising by about ${withUnit(Math.abs(slopePerMonth) * 12, unit)} a year.`
-          : `Already above the ${withUnit(threshold, unit)} threshold, but holding roughly steady.`;
-    } else if (!isFlat && slopePerMonth > 0 && monthsToThreshold != null) {
-      const months = Math.max(1, Math.round(monthsToThreshold));
-      risk = months <= 18 || nearThreshold ? "Watch" : "Low";
-      sentence =
-        risk === "Watch"
-          ? `Likely to cross ${withUnit(threshold, unit)} in ~${months} months at this rate.`
-          : `On pace to cross ${withUnit(threshold, unit)} in ~${months} months, further out than two years.`;
+          ? `Already above the ${withUnit(limit, unit)} upper limit and still rising by about ${withUnit(Math.abs(slopePerMonth) * 12, unit)} a year.`
+          : `Already above the ${withUnit(limit, unit)} upper limit, but holding roughly steady.`;
+    } else if (monthsToLimit != null) {
+      crossingDate = dateFromMonths(latest.date, monthsToLimit);
+      const months = Math.max(1, Math.round(monthsToLimit));
+      risk =
+        monthsToLimit <= 3 ? "High" : monthsToLimit <= 12 ? "Watch" : "Low";
+      sentence = `Likely to cross ${withUnit(limit, unit)} in about ${months} month${
+        months === 1 ? "" : "s"
+      } (around ${formatDate(crossingDate, "medium")}).`;
     } else {
-      risk = nearThreshold ? "Watch" : "Low";
-      sentence = nearThreshold
-        ? `Sitting just under the ${withUnit(threshold, unit)} threshold — worth rechecking.`
-        : "No threshold crossing expected in the next two years at this rate.";
+      risk = "Low";
+      sentence =
+        slopePerMonth < -0.001
+          ? `Trending away from the ${withUnit(limit, unit)} upper limit at this rate.`
+          : `Holding steady below the ${withUnit(limit, unit)} upper limit.`;
     }
-  } else {
-    const crossed = latest.value <= threshold;
-    const improving = slopePerMonth > 0.001;
-    if (crossed) {
-      if (improving) {
-        const months = estimateCrossing({
-          latest: latest.value,
-          threshold,
-          direction: "above",
-          slopePerMonth,
-        });
-        const close = Math.abs(threshold - latest.value) <= Math.abs(threshold) * 0.15;
-        risk = close ? "Watch" : "High";
-        sentence =
-          months != null
-            ? `Within ${withUnit(Math.abs(threshold - latest.value), unit)} of the ${withUnit(threshold, unit)} target — about ${Math.max(1, Math.round(months))} months away at this rate.`
-            : `Below the ${withUnit(threshold, unit)} target, but improving.`;
-      } else {
-        risk = "High";
-        sentence =
-          slopePerMonth < -0.001
-            ? `Below the ${withUnit(threshold, unit)} threshold and still falling.`
-            : `Below the ${withUnit(threshold, unit)} threshold and holding there.`;
+
+    if (target != null && latest.value < target) {
+      const monthsToTarget = estimateCrossing({
+        latest: latest.value,
+        threshold: target,
+        slopePerMonth,
+      });
+      if (monthsToTarget != null) {
+        targetDate = dateFromMonths(latest.date, monthsToTarget);
+        sentence += ` At this rate it reaches ${withUnit(target, unit)} around ${formatDate(targetDate, "medium")}.`;
       }
-    } else if (!isFlat && slopePerMonth < 0 && monthsToThreshold != null) {
-      const months = Math.max(1, Math.round(monthsToThreshold));
-      risk = months <= 18 || nearThreshold ? "Watch" : "Low";
-      sentence =
-        risk === "Watch"
-          ? `Likely to fall below ${withUnit(threshold, unit)} in ~${months} months at this rate.`
-          : `On pace to dip below ${withUnit(threshold, unit)} in ~${months} months, further out than two years.`;
-    } else {
-      risk = nearThreshold ? "Watch" : "Low";
-      sentence = nearThreshold
-        ? `Sitting just above the ${withUnit(threshold, unit)} threshold — worth rechecking.`
-        : "No threshold crossing expected in the next two years at this rate.";
     }
   }
 
-  if (isFlat && threshold != null && risk === "Low") {
-    sentence = "Holding steady — the change so far is too small to call a trend.";
-  }
+  const targetMonths = targetDate ? monthsBetween(latest.date, targetDate) : 0;
+  const horizon = enough
+    ? Math.min(
+        18,
+        Math.max(
+          6,
+          Math.round(Math.max(monthsToLimit ?? 0, targetMonths)) + 3,
+        ),
+      )
+    : 0;
 
-  const horizon = Math.min(
-    18,
-    Math.max(6, monthsToThreshold != null ? Math.round(monthsToThreshold) + 3 : 12),
-  );
-
-  const projectedPoints = Array.from({ length: 6 }, (_, index) => {
-    const months = (horizon * (index + 1)) / 6;
-    return {
-      date: addMonths(latest.date, months),
-      projected: round(latest.value + slopePerMonth * months, 2),
-    };
-  });
+  const projectedPoints = enough
+    ? Array.from({ length: 6 }, (_, index) => {
+        const months = (horizon * (index + 1)) / 6;
+        return {
+          date: dateFromMonths(latest.date, months),
+          projected: round(latest.value + slopePerMonth * months, 2),
+        };
+      })
+    : [];
 
   const chartData = [
     ...points.map((point) => ({
@@ -347,51 +309,45 @@ function analyseSeries(series) {
       actual: point.value,
       projected: null,
     })),
-    { date: latest.date, actual: null, projected: latest.value },
-    ...projectedPoints.map((point) => ({
-      date: point.date,
-      actual: null,
-      projected: point.projected,
-    })),
+    ...(enough
+      ? [
+          { date: latest.date, actual: null, projected: latest.value },
+          ...projectedPoints.map((point) => ({
+            date: point.date,
+            actual: null,
+            projected: point.projected,
+          })),
+        ]
+      : []),
   ].sort((a, b) => a.date.localeCompare(b.date));
 
   return {
     ...series,
     latest,
     first,
+    limit,
+    target,
     slopePerMonth: round(slopePerMonth, 4),
     monthlyChange: round(slopePerMonth, 3),
-    monthsToThreshold:
-      monthsToThreshold == null ? null : round(monthsToThreshold, 1),
+    monthsToThreshold: monthsToLimit == null ? null : round(monthsToLimit, 1),
+    crossingDate,
+    targetDate,
     projected12Months: round(latest.value + slopePerMonth * 12, 2),
     risk,
     sentence,
     spanMonths: round(spanMonths, 1),
-    isFlat,
+    isFlat: Math.abs(slopePerMonth) < (meta?.step ?? 0.2) / 18,
     chartData,
-    chart:
-      points.length >= 2 && (Boolean(meta) || points.length >= 3),
+    chart: enough,
     plainName: PLAIN_NAMES[series.test] ?? series.test,
   };
 }
 
-function estimateCrossing({ latest, threshold, direction, slopePerMonth }) {
-  if (threshold == null) return null;
-  if (direction === "above" && slopePerMonth > 0) {
-    if (latest >= threshold) return 0;
-    return (threshold - latest) / slopePerMonth;
-  }
-  if (direction === "below" && slopePerMonth < 0) {
-    if (latest <= threshold) return 0;
-    return (latest - threshold) / Math.abs(slopePerMonth);
-  }
-  if (direction === "below" && slopePerMonth > 0 && latest < threshold) {
-    return (threshold - latest) / slopePerMonth;
-  }
-  if (direction === "above" && slopePerMonth < 0 && latest > threshold) {
-    return (latest - threshold) / Math.abs(slopePerMonth);
-  }
-  return null;
+/** Months until an upward trend reaches a threshold; null if it never does. */
+function estimateCrossing({ latest, threshold, slopePerMonth }) {
+  if (threshold == null || slopePerMonth <= 0) return null;
+  if (latest >= threshold) return 0;
+  return (threshold - latest) / slopePerMonth;
 }
 
 /**
@@ -492,19 +448,19 @@ function describeChange(current, previous, meta) {
   const delta = current.value - previous.value;
   const direction = delta > 0 ? "rose" : "fell";
   const name = PLAIN_NAMES[current.test] ?? current.test;
-  const threshold = meta?.threshold;
+  const threshold =
+    typeof current.high === "number" ? current.high : meta?.range?.[1];
   let context;
 
   if (typeof threshold === "number") {
-    const above = meta.direction === "above";
-    const crossed = above ? current.value >= threshold : current.value <= threshold;
+    const crossed = current.value >= threshold;
     const gap = Math.abs(threshold - current.value);
     if (crossed) {
-      context = `that is ${above ? "above" : "below"} the ${withUnit(threshold, unit)} mark`;
+      context = `that is above the ${withUnit(threshold, unit)} upper limit`;
     } else if (gap <= Math.abs(threshold) * 0.1) {
-      context = `close to the ${withUnit(threshold, unit)} mark`;
+      context = `close to the ${withUnit(threshold, unit)} upper limit`;
     } else {
-      context = `still on the safer side of the ${withUnit(threshold, unit)} mark`;
+      context = `still below the ${withUnit(threshold, unit)} upper limit`;
     }
   } else if (
     typeof current.low === "number" &&
