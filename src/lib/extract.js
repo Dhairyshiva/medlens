@@ -446,7 +446,9 @@ export function listMedicines(reports = []) {
         name: medicine.name,
         dose: medicine.dose ?? "",
         doctor: medicine.doctor ?? report.doctor ?? "Not recorded",
-        date: report.date,
+        start: medicine.start ?? report.date,
+        stop: medicine.stop ?? null,
+        date: medicine.start ?? report.date,
         source: report.source,
         reportTitle: report.title,
       });
