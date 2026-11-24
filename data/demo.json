@@ -1,0 +1,88 @@
+{
+  "patient": {
+    "name": "Ravi Kumar",
+    "age": 52,
+    "sex": "Male",
+    "bloodGroup": "O+",
+    "id": "ML-DEMO-0521"
+  },
+  "reports": [
+    {
+      "id": "demo-lab-2026-03-14",
+      "kind": "lab",
+      "title": "HbA1c check",
+      "date": "2026-03-14",
+      "source": "Lab A",
+      "doctor": null,
+      "panels": [],
+      "values": [
+        { "test": "HbA1c", "value": 5.0, "unit": "%", "low": 4.0, "high": 5.7 }
+      ]
+    },
+    {
+      "id": "demo-lab-2026-06-20",
+      "kind": "lab",
+      "title": "HbA1c & lipid profile",
+      "date": "2026-06-20",
+      "source": "Lab B",
+      "doctor": null,
+      "panels": ["lipid"],
+      "values": [
+        { "test": "HbA1c", "value": 5.3, "unit": "%", "low": 4.0, "high": 5.7 },
+        { "test": "Total Cholesterol", "value": 195, "unit": "mg/dL", "low": 0, "high": 200 },
+        { "test": "HDL Cholesterol", "value": 43, "unit": "mg/dL", "low": 40, "high": 100 },
+        { "test": "Triglycerides", "value": 148, "unit": "mg/dL", "low": 0, "high": 150 }
+      ]
+    },
+    {
+      "id": "demo-lab-2026-09-18",
+      "kind": "lab",
+      "title": "HbA1c follow-up",
+      "date": "2026-09-18",
+      "source": "Lab C",
+      "doctor": null,
+      "panels": [],
+      "values": [
+        { "test": "HbA1c", "value": 5.6, "unit": "%", "low": 4.0, "high": 5.7 }
+      ]
+    },
+    {
+      "id": "demo-rx-2026-05-02",
+      "kind": "prescription",
+      "title": "Cardiology review",
+      "date": "2026-05-02",
+      "source": "Cardiology Clinic",
+      "doctor": "Dr. Mehta",
+      "panels": [],
+      "values": [],
+      "medicines": [
+        {
+          "name": "Atorvastatin",
+          "dose": "20 mg",
+          "doctor": "Dr. Mehta",
+          "start": "2026-05-02",
+          "stop": "Continue"
+        }
+      ]
+    },
+    {
+      "id": "demo-rx-2026-09-05",
+      "kind": "prescription",
+      "title": "Respiratory review",
+      "date": "2026-09-05",
+      "source": "City Clinic",
+      "doctor": "Dr. Rao",
+      "panels": [],
+      "values": [],
+      "medicines": [
+        {
+          "name": "Clarithromycin",
+          "dose": "500 mg",
+          "doctor": "Dr. Rao",
+          "start": "2026-09-05",
+          "stop": "Continue"
+        }
+      ]
+    }
+  ]
+}
