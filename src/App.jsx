@@ -10,7 +10,7 @@ import InteractionAlerts from "./components/InteractionAlerts.jsx";
 import Timeline from "./components/Timeline.jsx";
 import EmptyState from "./components/EmptyState.jsx";
 import Footer from "./components/Footer.jsx";
-import { demoPatient } from "./data/demoPatient.js";
+import demoPatient from "../data/demo.json";
 import {
   extractFromFiles,
   listLabValues,
@@ -100,7 +100,7 @@ export default function App() {
     setExtraction({
       pending: [],
       errors: [],
-      note: "Demo patient loaded — 5 lab reports and 3 prescriptions across 5 visit dates.",
+      note: "Demo patient loaded — 3 lab reports and 2 prescriptions across 5 visit dates.",
     });
   };
 
