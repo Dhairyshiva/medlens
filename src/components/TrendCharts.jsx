@@ -54,7 +54,13 @@ function TrendCard({ series }) {
   const { points, latest, threshold, unit, low, high } = series;
   const values = points
     .map((point) => point.value)
-    .concat(typeof threshold === "number" ? [threshold] : []);
+    .concat(
+      series.chartData
+        .filter((point) => point.projected != null)
+        .map((point) => point.projected),
+    )
+    .concat(typeof threshold === "number" ? [threshold] : [])
+    .concat(typeof series.target === "number" ? [series.target] : []);
   const min = Math.min(...values);
   const max = Math.max(...values);
   const padding = Math.max((max - min) * 0.2, Math.abs(max) * 0.05, 1);
